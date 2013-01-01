@@ -68,7 +68,7 @@ void UnitWalkBState::init()
 void UnitWalkBState::think()
 {
 	bool unitspotted = false;
-
+	bool onScreen = (_unit->getVisible() && _parent->getMap()->getCamera()->isOnScreen(_unit->getPosition()));
 	if (_unit->isOut())
 	{
 		_pf->abortPath();
@@ -80,7 +80,7 @@ void UnitWalkBState::think()
 	{
 		playMovementSound();
 
-		_unit->keepWalking(); // advances the phase
+		_unit->keepWalking(onScreen); // advances the phase
 
 		// unit moved from one tile to the other, update the tiles
 		if (_unit->getPosition() != _unit->getLastPosition())
@@ -160,7 +160,7 @@ void UnitWalkBState::think()
 				return;
 			}
 		}
-		else
+		else if (onScreen)
 		{
 			// make sure the unit sprites are up to date
 			if (_pf->getStrafeMove()) {
@@ -179,19 +179,20 @@ void UnitWalkBState::think()
 	if (_unit->getStatus() == STATUS_STANDING)
 	{
 		// check if we did spot new units
-		if (unitspotted && !_unit->getCharging() != 0)
+		if (unitspotted && _unit->getCharging() == 0)
 		{
+			_parent->getMap()->cacheUnit(_unit);
 			_pf->abortPath();
 			return;
 		}
 
-		if (_unit->getVisible() && _parent->getMap()->getCamera()->isOnScreen(_unit->getPosition()))
+		if (onScreen)
 		{
 			setNormalWalkSpeed();
 		}
 		else
 		{
-			_parent->setStateInterval(1);
+			_parent->setStateInterval(0);
 		}
 		int dir = _pf->getStartDirection();
 		if (dir != -1)
@@ -207,12 +208,14 @@ void UnitWalkBState::think()
 			{
 				_action.result = "STR_NOT_ENOUGH_TIME_UNITS";
 				_pf->abortPath();
+				_parent->getMap()->cacheUnit(_unit);
 				return;
 			}
 
 			if (_parent->checkReservedTU(_unit, tu) == false)
 			{
 				_pf->abortPath();
+				_parent->getMap()->cacheUnit(_unit);
 				return;
 			}
 
@@ -220,7 +223,7 @@ void UnitWalkBState::think()
 			// we are not using the turn state, because turning during walking costs no tu
 			if (dir != _unit->getDirection() && dir < Pathfinding::DIR_UP && !_pf->getStrafeMove())
 			{
-				_unit->lookAt(dir);
+				_unit->lookAt(dir, true);
 				return;
 			}
 
@@ -246,21 +249,23 @@ void UnitWalkBState::think()
 			{
 				if (_unit->spendEnergy(tu, _parent->dontSpendTUs()))
 				{
-					_unit->startWalking(dir, destination, _parent->getSave()->getTile(destination));
+					_unit->startWalking(dir, destination, _parent->getSave()->getTile(destination), onScreen);
 				}
 				else
 				{
 					_action.result = "STR_NOT_ENOUGH_ENERGY";
+				_parent->getMap()->cacheUnit(_unit);
 					_parent->popState();
 				}
 			}
 			else
 			{
 				_action.result = "STR_NOT_ENOUGH_TIME_UNITS";
+				_parent->getMap()->cacheUnit(_unit);
 				_parent->popState();
 			}
 			// make sure the unit sprites are up to date
-			if (!(_unit->getVisible() && _parent->getMap()->getCamera()->isOnScreen(_unit->getPosition())))
+			if (onScreen)
 			{
 				if (_pf->getStrafeMove()) {
 					// This is where we fake out the strafe movement direction so the unit "moonwalks"
@@ -271,7 +276,7 @@ void UnitWalkBState::think()
 				} else {
 					_parent->getMap()->cacheUnit(_unit);
 				}
-		}
+			}
 		}
 		else
 		{
@@ -286,10 +291,12 @@ void UnitWalkBState::think()
 		_unit->turn();
 		unitspotted = _terrain->calculateFOV(_unit);
 		// make sure the unit sprites are up to date
-		_parent->getMap()->cacheUnit(_unit);
-		if (unitspotted && !_unit->getCharging() != 0)
+		if (onScreen)
+			_parent->getMap()->cacheUnit(_unit);
+		if (unitspotted && _unit->getStatus() != STATUS_PANICKING && _unit->getCharging() == 0)
 		{
 			_pf->abortPath();
+				_parent->getMap()->cacheUnit(_unit);
 			return;
 		}
 	}
@@ -308,20 +315,21 @@ void UnitWalkBState::cancel()
  */
 void UnitWalkBState::postPathProcedures()
 {
-	if (_action.actor->getCharging() != 0)
+	if (_unit->getCharging() != 0)
 	{
-		_unit->lookAt(_action.actor->getCharging()->getPosition() + Position(_action.actor->getArmor()->getSize()-1, _action.actor->getArmor()->getSize()-1, 0), false);
-		while (_action.actor->getStatus() == STATUS_TURNING)
-			_action.actor->turn();
+		_unit->lookAt(_unit->getCharging()->getPosition() + Position(_unit->getArmor()->getSize()-1, _unit->getArmor()->getSize()-1, 0), false);
+		while (_unit->getStatus() == STATUS_TURNING)
+			_unit->turn();
 		if (_parent->getTileEngine()->validMeleeRange(_unit, _action.actor->getCharging()))
 		{
 			_action.target = _action.actor->getCharging()->getPosition();
 			_action.weapon = _action.actor->getMainHandWeapon();
 			_action.type = BA_HIT;
 			_action.TU = _action.actor->getActionTUs(_action.type, _action.weapon);
-			_action.actor->setCharging(0);
+			_unit->setCharging(0);
 		}
 	}
+	_unit->setCache(0);
 	_terrain->calculateUnitLighting();
 	_terrain->calculateFOV(_unit);
 	_parent->getMap()->cacheUnit(_unit);
@@ -345,7 +353,7 @@ void UnitWalkBState::setNormalWalkSpeed()
  */
 void UnitWalkBState::playMovementSound()
 {
-	if (!_unit->getVisible() && !_parent->getSave()->getDebugMode()) return;
+	if ((!_unit->getVisible() && !_parent->getSave()->getDebugMode()) || !_parent->getMap()->getCamera()->isOnScreen(_unit->getPosition())) return;
 
 	if (_unit->getMoveSound() != -1)
 	{
